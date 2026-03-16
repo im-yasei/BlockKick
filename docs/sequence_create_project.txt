@@ -1,0 +1,30 @@
+@startuml
+autonumber
+actor User
+participant "DApp (Python)" as DApp
+participant "Wallet Module" as Wallet
+participant "Blockchain Node (Rust)" as Node
+participant "P2P Network" as P2P
+participant "Aggregation Service" as Aggregator
+
+User -> DApp: create-project "Game" goal 1000
+DApp -> Wallet: Get public key
+Wallet --> DApp: pubkey_hex
+DApp -> DApp: Build transaction data
+DApp -> Wallet: Sign transaction
+Wallet --> DApp: signature_hex
+DApp -> Node: POST /api/v1/transactions
+note over Node: Validate signature\nCheck balance\nAdd to mempool
+Node --> DApp: {tx_id, status: "pending"}
+Node -> P2P: Broadcast transaction
+P2P -> P2P: Propagate to peers
+note over Node: Mining cycle\nInclude in block
+Node -> Node: Mine block (PoW)
+Node -> P2P: Broadcast new block
+P2P -> P2P: Validate & propagate
+Aggregator -> Node : Polling Node 
+Node -> Aggregator: Update project stats
+DApp -> Node: GET /api/v1/transactions/{tx_id}
+Node --> DApp: {status: "confirmed", block_height: 15}
+DApp --> User: Project created! ID: proj_abc123
+@enduml

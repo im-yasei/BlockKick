@@ -1,0 +1,49 @@
+@startuml
+
+skinparam componentStyle rectangle
+
+package "Users" #e8f5e9 {
+    [CLI DApp Interface] as CLI
+}
+
+package "DApp (Python)" #e3f2fd {
+    [Wallet Module] as Wallet
+    [Mining Module] as Mining
+    [Transaction Builder] as TxBuilder
+    [Block Builder] as BlBuilder
+}
+
+package "Aggregation Service (Python)" #fff3e0 {
+    [Block Sync Module] as Sync
+    [Data Aggregator] as Aggregator
+    [(DB/Cache)] as Cache
+
+}
+
+package "Blockchain Nodes (Rust)" #fce4ec {
+    [Node 1] as Node1
+    [Node 2] as Node2
+    [Node 3] as Node3
+    [Node 4] as Node4
+}
+
+CLI --> Wallet
+CLI --> Mining
+Wallet --> TxBuilder
+Mining --> BlBuilder 
+
+TxBuilder --> Node1 : Rest API
+BlBuilder --> Node1 : Rest API
+
+Node1 <--> Node2 : P2P 
+Node2 <--> Node3 : P2P 
+Node2 <--> Node4 : P2P 
+Node1 <--> Node4 : P2P 
+
+Sync --> Node1 : Block Sync
+Sync --> Cache
+Aggregator --> Cache
+
+TxBuilder --> Aggregator: Rest API
+
+@enduml

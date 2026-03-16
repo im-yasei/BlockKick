@@ -1,0 +1,23 @@
+@startuml
+autonumber
+participant "DApp Mining (Python)" as DApp
+participant "Blockchain Node (Rust)" as Node
+participant "P2P Network" as P2P
+participant "Other Nodes" as OtherNodes
+
+DApp -> Node: GET /api/v1/mining/candidate
+Node --> DApp: {block_template, transactions, prev_hash}
+
+loop Mining loop
+    DApp -> DApp: Increment nonce
+    DApp -> DApp: Calculate hash
+    DApp -> DApp: Check difficulty target
+end
+
+DApp -> Node: POST /api/v1/mining/submit
+note over Node: Validate block\nCheck PoW\nVerify transactions
+Node --> DApp: {status: "accepted", reward: 50}
+Node -> P2P: Broadcast new block
+P2P -> OtherNodes: Propagate block
+OtherNodes -> OtherNodes: Validate & add to chain
+@enduml

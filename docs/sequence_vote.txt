@@ -1,0 +1,24 @@
+@startuml
+autonumber
+actor User
+participant "DApp (Python)" as DApp
+participant "Indexer Service" as Indexer
+participant "Wallet Module" as Wallet
+participant "Blockchain Node (Rust)" as Node
+
+User -> DApp: vote project-id "proj_123" amount 50
+DApp -> Indexer: GET /api/v1/projects/proj_123
+Indexer --> DApp: {status: "active", raised: 750, goal: 1000}
+
+alt Project valid
+    DApp -> Wallet: Get balance
+    Wallet --> DApp: balance: 200
+    DApp -> Wallet: Sign vote transaction
+    Wallet --> DApp: signature_hex
+    DApp -> Node: POST /api/v1/transactions
+    Node --> DApp: {tx_id, status: "pending"}
+    DApp --> User: Vote submitted! TX: tx_xyz789
+else Project invalid
+    DApp --> User: Error: Project not found or ended
+end
+@enduml
