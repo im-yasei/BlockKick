@@ -1,11 +1,11 @@
 //! State module - упрощённая версия для checkpoint'ов
-//! 
-//! Балансы вычисляются из блокчейна (get_balance), 
+//!
+//! Балансы вычисляются из блокчейна (get_balance),
 //! этот модуль хранит только данные проектов и используется для future checkpoints.
 
-use std::collections::HashMap;
-use crate::types::{Transaction, TransactionData};
 use crate::state::project::Project;
+use crate::types::TransactionData;
+use std::collections::HashMap;
 
 /// Snapshot состояния для checkpoint'ов (будущая оптимизация)
 #[derive(Debug, Clone)]
@@ -42,7 +42,7 @@ impl State {
 
         for block in blocks {
             let block_time = block.header.timestamp;
-            
+
             for tx in &block.transactions {
                 match &tx.data {
                     TransactionData::Coinbase(data) => {
@@ -84,7 +84,7 @@ impl State {
                     }
                 }
             }
-            
+
             // Обновляем raised_amount для проектов
             for tx in &block.transactions {
                 if let TransactionData::FundProject(data) = &tx.data {
@@ -138,7 +138,6 @@ mod tests {
                 block_height: height,
             }),
             1234567890,
-            None,
         )
     }
 

@@ -50,6 +50,13 @@ pub enum TransactionData {
     Coinbase(CoinbaseData),
 }
 
+impl TransactionData {
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let json = serde_json::to_string(self).unwrap();
+        json.into_bytes()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
     pub id: String,
@@ -69,7 +76,6 @@ impl Transaction {
         to: Option<String>,
         data: TransactionData,
         timestamp: u64,
-        signature: Option<String>,
     ) -> Self {
         let tx = Transaction {
             id: String::new(),
@@ -78,12 +84,16 @@ impl Transaction {
             to,
             data,
             timestamp,
-            signature,
+            signature: None,
         };
 
         let id = tx.calculate_id();
 
         Transaction { id, ..tx }
+    }
+
+    pub fn add_signature(&mut self, signature: String) {
+        self.signature = Some(signature);
     }
 
     /// Вычисляет ID транзакции как SHA-256 хеш от данных для подписи
@@ -104,6 +114,29 @@ impl Transaction {
     pub fn requires_signature(&self) -> bool {
         !matches!(self.tx_type, TransactionType::Coinbase)
     }
+
+    // Вызывается майнером/нодой при создании блока
+    pub fn create_coinbase(to: String, reward: u64, block_height: u64) -> Self {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        let mut tx = Transaction::new(
+            TransactionType::Coinbase,
+            None,
+            Some(to),
+            TransactionData::Coinbase(CoinbaseData {
+                reward,
+                block_height,
+            }),
+            timestamp,
+        );
+
+        tx.signature = None;
+
+        tx
+    }
 }
 
 /// тесты нужны для проврки детерминированности сериализации структуры при недетерминированности
@@ -123,7 +156,6 @@ mod tests {
                 message: "test".to_string(),
             }),
             1234567890,
-            Some("signature_abc".to_string()),
         );
 
         let tx2 = Transaction::new(
@@ -135,7 +167,6 @@ mod tests {
                 message: "test".to_string(),
             }),
             1234567890,
-            Some("signature_xyz".to_string()),
         );
 
         assert_eq!(
@@ -155,7 +186,6 @@ mod tests {
                 message: "test".to_string(),
             }),
             1234567890,
-            Some("signature".to_string()),
         );
 
         // get_signing_data() должен возвращать одинаковый JSON

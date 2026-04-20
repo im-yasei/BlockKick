@@ -1,257 +1,157 @@
-use BlockKick::{
-    types::transaction::{CoinbaseData, CreateProjectData, FundProjectData, TransferData},
-    types::{Block, Transaction, TransactionData, TransactionType},
-    Blockchain, Mempool,
-};
+use std::env;
+use std::process;
+use std::sync::{Arc, Mutex};
+
+mod api;
+mod consensus;
+mod crypto;
+mod mempool;
+mod state;
+mod storage;
+mod types;
+mod validator;
+
+use api::server::{start_server, ApiContext};
+use mempool::mempool::Mempool;
+use storage::blockchain::Blockchain;
+use types::Block;
+
+/// Конфигурация ноды
+struct NodeConfig {
+    port: u16,
+    difficulty: u32,
+}
+
+impl Default for NodeConfig {
+    fn default() -> Self {
+        NodeConfig {
+            port: 3000,
+            difficulty: 4,
+        }
+    }
+}
 
 fn main() {
-    println!("1. Создание блокчейна с Genesis блоком...");
-    let mut chain = Blockchain::new();
-    println!("Genesis блок создан");
-    println!("Высота цепи: {}\n", chain.height());
+    println!("BlockKick Node v0.3.0");
+    println!("========================");
 
-    println!("2. Майнинг Блока 1 (Coinbase для Alice и Bob)...");
-    let prev_hash = chain.get_latest_block().unwrap().calculate_hash();
-    let block1 = Block::new(
-        1,
-        prev_hash,
-        vec![
-            create_coinbase("alice", 100, 1),
-            create_coinbase("bob", 100, 1),
-        ],
-        0,
-    );
-    chain.add_block(block1).unwrap();
-    println!("Блок 1 добавлен в цепь");
-    println!("Баланс Alice: {} монет", chain.get_balance("alice"));
-    println!("Баланс Bob: {} монет\n", chain.get_balance("bob"));
+    // Парсим аргументы командной строки
+    let config = parse_args();
 
-    println!("3. Блок 2: Перевод средств...");
-    let prev_hash = chain.get_latest_block().unwrap().calculate_hash();
-    let block2 = Block::new(
-        2,
-        prev_hash,
-        vec![
-            create_coinbase("miner", 50, 2),
-            create_transfer("alice", "charlie", 30),
-        ],
-        0,
-    );
-    chain.add_block(block2).unwrap();
-    println!("Блок 2 добавлен в цепь");
-    println!(
-        "Баланс Alice: {} монет (100 - 30)",
-        chain.get_balance("alice")
-    );
-    println!("Баланс Charlie: {} монет", chain.get_balance("charlie"));
-    println!(
-        "Баланс Bob: {} монет (без изменений)\n",
-        chain.get_balance("bob")
-    );
+    println!("Configuration:");
+    println!("   Port: {}", config.port);
+    println!("   Difficulty: {}", config.difficulty);
+    println!();
 
-    println!("4. Блок 3: Создание краудфандингового проекта...");
-    let prev_hash = chain.get_latest_block().unwrap().calculate_hash();
-    let block3 = Block::new(
-        3,
-        prev_hash,
-        vec![
-            create_coinbase("eve", 50, 3),
-            create_project("eve", "proj_rust_game", "Open Source RPG Game", 500),
-        ],
-        0,
-    );
-    chain.add_block(block3).unwrap();
-    println!("Блок 3 добавлен в цепь");
-    println!("Проект создан: proj_rust_game");
-    println!("Создатель: eve");
-    println!("Цель: 500 монет\n");
+    // Инициализация блокчейна
+    println!("Initializing blockchain...");
+    let blockchain = Arc::new(Mutex::new(Blockchain::new()));
 
-    println!("5. Блок 4: Взнос в проект (Fund Project)...");
-    let prev_hash = chain.get_latest_block().unwrap().calculate_hash();
-    let block4 = Block::new(
-        4,
-        prev_hash,
-        vec![
-            create_coinbase("dave", 200, 4),
-            create_fund_project("bob", "eve", "proj_rust_game", 100),
-        ],
-        0,
-    );
-    chain.add_block(block4).unwrap();
-    println!("Блок 4 добавлен в цепь");
-    println!("Bob внёс 100 монет в proj_rust_game");
-    println!("Баланс Bob: {} монет (100 - 100)", chain.get_balance("bob"));
-    println!(
-        "Баланс Eve: {} монет (+100 от взноса)",
-        chain.get_balance("eve")
-    );
-
-    if let Some(project) = chain.get_project("proj_rust_game") {
+    // Проверяем что genesis блок создан
+    {
+        let chain = blockchain.lock().unwrap();
         println!(
-            "Собрано: {} / {} монет",
-            project.raised_amount, project.goal_amount
+            "   Genesis block hash: {}...",
+            &chain.get_latest_block().unwrap().calculate_hash()[..16]
         );
-        println!("Бэкеры: {:?}\n", project.backers);
+        println!("   Chain height: {}", chain.height());
     }
 
-    println!("6. Валидация цепи...");
-    println!("Высота цепи: {} блоков", chain.height());
-    println!(
-        "Валидация: {}",
-        if chain.validate_chain() {
-            "SUCCSESS"
-        } else {
-            "ERROR"
+    // Инициализация мемпула
+    println!("Initializing mempool...");
+    let mempool = Arc::new(Mutex::new(Mempool::new()));
+
+    // Создаём контекст для API
+    let ctx = ApiContext {
+        blockchain: Arc::clone(&blockchain),
+        mempool: Arc::clone(&mempool),
+    };
+
+    // Запуск HTTP сервера
+    println!("Starting API server on http://0.0.0.0:{}...", config.port);
+    println!();
+    println!("Available endpoints:");
+    println!("   GET  /api/v1/chain              - Chain info");
+    println!("   GET  /api/v1/balance/:address   - Get balance");
+    println!("   GET  /api/v1/block/:height      - Get block by height");
+    println!("   GET  /api/v1/projects           - List projects");
+    println!("   GET  /api/v1/transactions/:id   - Transaction status");
+    println!("   POST /api/v1/transactions       - Submit transaction");
+    println!("   GET  /api/v1/mining/candidate   - Get mining template");
+    println!("   POST /api/v1/mining/submit      - Submit mined block");
+    println!();
+    println!("Press Ctrl+C to stop the node");
+    println!("========================");
+
+    // Запускаем сервер (блокирует основной поток)
+    if let Err(e) = start_server(ctx, config.port) {
+        eprintln!("Server error: {}", e);
+        process::exit(1);
+    }
+}
+
+/// Парсит аргументы командной строки
+fn parse_args() -> NodeConfig {
+    let mut config = NodeConfig::default();
+
+    let args: Vec<String> = env::args().collect();
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" | "-p" => {
+                if i + 1 < args.len() {
+                    if let Ok(port) = args[i + 1].parse::<u16>() {
+                        config.port = port;
+                        i += 1;
+                    } else {
+                        eprintln!(" Invalid port number, using default 3000");
+                    }
+                }
+            }
+            "--difficulty" | "-d" => {
+                if i + 1 < args.len() {
+                    if let Ok(diff) = args[i + 1].parse::<u32>() {
+                        config.difficulty = diff;
+                        i += 1;
+                    } else {
+                        eprintln!(" Invalid difficulty, using default 4");
+                    }
+                }
+            }
+            "--help" | "-h" => {
+                print_help();
+                process::exit(0);
+            }
+            _ => {
+                eprintln!(" Unknown argument: {}", args[i]);
+            }
         }
-    );
-    println!(
-        "Статус цепи: {}\n",
-        if chain.validate_chain() {
-            "Все блоки связаны корректно"
-        } else {
-            "Обнаружены нарушения"
-        }
-    );
-
-    println!("7. Демонстрация вычисления баланса с нуля...");
-    println!("Запрос баланса для 'alice'...");
-    let start = std::time::Instant::now();
-    let balance = chain.get_balance("alice");
-    let elapsed = start.elapsed();
-    println!("Баланс: {} монет", balance);
-    println!("Время вычисления: {:?}", elapsed);
-    println!(
-        "(Баланс вычислен проходом по всем {} блокам)\n",
-        chain.height()
-    );
-
-    println!("8. Мемпул: Проверка pending транзакций...");
-    let mut mempool = Mempool::new();
-
-    let tx1 = create_transfer("charlie", "frank", 10);
-    match mempool.add_transaction(tx1, &chain) {
-        Ok(_) => println!("Транзакция charlie -> frank (10 монет) добавлена в мемпул"),
-        Err(e) => println!("Ошибка: {}", e),
+        i += 1;
     }
 
-    let tx2 = create_transfer("charlie", "grace", 25);
-    match mempool.add_transaction(tx2, &chain) {
-        Ok(_) => println!("Транзакция charlie -> grace (25 монет) добавлена в мемпул"),
-        Err(e) => println!("Отклонено: {}", e),
-    }
-
-    println!("Размер мемпула: {} транзакций", mempool.len());
-    println!(
-        "Ожидание отправки для charlie: {} монет",
-        mempool.get_pending_outgoing("charlie")
-    );
-    println!(
-        "Доступно для charlie: {} монет\n",
-        chain.get_balance_with_pending("charlie", &mempool)
-    );
-
-    println!("9. Проверка возможности траты (can_spend)...");
-    println!(
-        "Может ли alice потратить 80 монет? {}",
-        if chain.can_spend("alice", 80, &Mempool::new()) {
-            "Да"
-        } else {
-            "Нет"
-        }
-    );
-    println!(
-        "Может ли alice потратить 100 монет? {}",
-        if chain.can_spend("alice", 100, &Mempool::new()) {
-            "Да"
-        } else {
-            "Нет"
-        }
-    );
-    println!(
-        "Может ли bob потратить 10 монет? {}",
-        if chain.can_spend("bob", 10, &Mempool::new()) {
-            "Да"
-        } else {
-            "Нет"
-        }
-    );
-
-    println!("\nИтоговая статистика                    ");
-    println!("  Балансы (вычислены из блоков):                           ");
-    println!("    alice:   {:>4} монет", chain.get_balance("alice"));
-    println!("    bob:     {:>4} монет", chain.get_balance("bob"));
-    println!("    charlie: {:>4} монет", chain.get_balance("charlie"));
-    println!("    dave:    {:>4} монет", chain.get_balance("dave"));
-    println!("    eve:     {:>4} монет", chain.get_balance("eve"));
-    println!("    miner:   {:>4} монет", chain.get_balance("miner"));
-    println!("  Проекты:                                                  ");
-    if let Some(project) = chain.get_project("proj_rust_game") {
-        println!(
-            "    proj_rust_game: собрано {}/{} монет",
-            project.raised_amount, project.goal_amount
-        );
-    }
-    println!("  Цепь: {} блоков", chain.height());
-    println!("  Мемпул: {} pending транзакций", mempool.len());
+    config
 }
 
-fn create_coinbase(to: &str, reward: u64, height: u64) -> Transaction {
-    Transaction::new(
-        TransactionType::Coinbase,
-        None,
-        Some(to.to_string()),
-        TransactionData::Coinbase(CoinbaseData {
-            reward,
-            block_height: height,
-        }),
-        1234567890,
-        None,
-    )
-}
-
-fn create_transfer(from: &str, to: &str, amount: u64) -> Transaction {
-    Transaction::new(
-        TransactionType::Transfer,
-        Some(from.to_string()),
-        Some(to.to_string()),
-        TransactionData::Transfer(TransferData {
-            amount,
-            message: String::new(),
-        }),
-        1234567890,
-        Some("signature_stub".to_string()),
-    )
-}
-
-fn create_project(creator: &str, project_id: &str, name: &str, goal: u64) -> Transaction {
-    Transaction::new(
-        TransactionType::CreateProject,
-        Some(creator.to_string()),
-        None,
-        TransactionData::CreateProject(CreateProjectData {
-            project_id: project_id.to_string(),
-            name: name.to_string(),
-            description: format!("{} description", name),
-            goal_amount: goal,
-            deadline_timestamp: 9999999999,
-            creator_wallet: creator.to_string(),
-        }),
-        1234567890,
-        Some("signature_stub".to_string()),
-    )
-}
-
-fn create_fund_project(backer: &str, creator: &str, project_id: &str, amount: u64) -> Transaction {
-    Transaction::new(
-        TransactionType::FundProject,
-        Some(backer.to_string()),
-        Some(creator.to_string()),
-        TransactionData::FundProject(FundProjectData {
-            project_id: project_id.to_string(),
-            amount,
-            backer_note: String::new(),
-        }),
-        1234567890,
-        Some("signature_stub".to_string()),
-    )
+/// Выводит справку по использованию
+fn print_help() {
+    println!("BlockKick Node - Децентрализованная краудфандинговая платформа");
+    println!();
+    println!("USAGE:");
+    println!("    cargo run [OPTIONS]");
+    println!();
+    println!("OPTIONS:");
+    println!("    -p, --port <PORT>              HTTP port (default: 3000)");
+    println!("    -d, --difficulty <DIFFICULTY>  PoW difficulty (default: 4)");
+    println!("    -h, --help                     Print this help message");
+    println!();
+    println!("EXAMPLES:");
+    println!("    cargo run                      # Start on port 3000");
+    println!("    cargo run -- --port 8080       # Start on port 8080");
+    println!("    cargo run -- -p 9000 -d 2      # Port 9000, difficulty 2");
+    println!();
+    println!("API ENDPOINTS:");
+    println!("    http://localhost:3000/api/v1/chain");
+    println!("    http://localhost:3000/api/v1/mining/candidate");
+    println!("    http://localhost:3000/api/v1/balance/<address>");
 }

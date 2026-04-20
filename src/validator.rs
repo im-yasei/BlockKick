@@ -1,4 +1,4 @@
-use crate::crypto::hash_string;
+use crate::crypto::verify_signature;
 use crate::types::{Block, Transaction};
 
 pub struct Validator;
@@ -16,8 +16,7 @@ impl Validator {
         }
 
         if let (Some(_from), Some(_signature)) = (&tx.from, &tx.signature) {
-            // TODO: реализовать после завершения signature.rs
-            //return verify_signature(&tx.from, &tx.signature, &tx.data.to_bytes());
+            return verify_signature(_from, _signature, &tx.get_signing_data().as_bytes());
         }
 
         true
@@ -35,24 +34,28 @@ impl Validator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::KeyPair;
+    use crate::crypto::sign_data;
+    use crate::keys::KeyPair;
     use crate::types::transaction::*;
     use crate::types::Block;
 
     #[test]
     fn test_validate_transaction_id() {
-        let tx = Transaction::new(
+        let key_pair = KeyPair::generate();
+
+        let mut tx = Transaction::new(
             TransactionType::Transfer,
-            Some("test_from".to_string()),
+            Some(key_pair.public_key),
             Some("test_to".to_string()),
             TransactionData::Transfer(TransferData {
                 amount: 100,
                 message: "test".to_string(),
             }),
             1234567890,
-            Some("signature".to_string()),
         );
 
+        let signing_data = tx.get_signing_data();
+        tx.add_signature(sign_data(&key_pair.private_key, signing_data.as_bytes()));
         assert!(Validator::validate_transaction(&tx));
     }
 
@@ -67,7 +70,6 @@ mod tests {
                 block_height: 100,
             }),
             1234567890,
-            None,
         );
 
         assert!(Validator::validate_transaction(&tx));
@@ -84,7 +86,6 @@ mod tests {
                 block_height: 0,
             }),
             1234567890,
-            None,
         )];
 
         let block = Block::new(0, "0".repeat(64), transactions, 0);

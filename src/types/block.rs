@@ -1,3 +1,4 @@
+use crate::consensus::validate_pow;
 use crate::crypto::hash_string;
 use crate::types::transaction::Transaction;
 use crate::validator::Validator;
@@ -91,7 +92,10 @@ impl Block {
             hashes = next_level;
         }
 
-        hashes.into_iter().next().unwrap_or_else(|| hash_string("empty"))
+        hashes
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| hash_string("empty"))
     }
 
     pub fn calculate_hash(&self) -> String {
@@ -101,6 +105,11 @@ impl Block {
     pub fn validate(&self) -> bool {
         let expected_merkle = Self::calculate_merkle_root(&self.transactions);
         if self.header.merkle_root != expected_merkle {
+            return false;
+        }
+
+        let block_hash = self.calculate_hash();
+        if !validate_pow(&self.header, &block_hash) {
             return false;
         }
 

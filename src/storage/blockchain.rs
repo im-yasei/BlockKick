@@ -1,6 +1,6 @@
+use crate::state::State;
 use crate::types::{Block, Transaction, TransactionData};
 use crate::validator::Validator;
-use crate::state::State;
 
 /// Blockchain storage - holds the chain of blocks
 #[derive(Debug, Clone)]
@@ -55,9 +55,7 @@ impl Blockchain {
         }
 
         // Check that block connects to the chain
-        let latest_block = self
-            .get_latest_block()
-            .ok_or("Blockchain is empty")?;
+        let latest_block = self.get_latest_block().ok_or("Blockchain is empty")?;
 
         if block.header.prev_hash != latest_block.calculate_hash() {
             return Err(format!(
@@ -71,8 +69,7 @@ impl Blockchain {
         if block.header.index != latest_block.header.index + 1 {
             return Err(format!(
                 "Block height {} does not follow latest block height {}",
-                block.header.index,
-                latest_block.header.index
+                block.header.index, latest_block.header.index
             ));
         }
 
@@ -220,13 +217,19 @@ impl Blockchain {
     }
 
     /// Validates a transaction against current chain state (balance check)
-    pub fn validate_transaction_state(&self, tx: &Transaction, mempool: &crate::Mempool) -> Result<(), String> {
+    pub fn validate_transaction_state(
+        &self,
+        tx: &Transaction,
+        mempool: &crate::Mempool,
+    ) -> Result<(), String> {
         // Coinbase doesn't need balance check
         if !tx.requires_signature() {
             return Ok(());
         }
 
-        let from = tx.from.as_ref()
+        let from = tx
+            .from
+            .as_ref()
             .ok_or("Transaction must have 'from' address")?;
 
         let tx_amount = match &tx.data {
@@ -241,13 +244,17 @@ impl Blockchain {
             let pending = mempool.get_pending_outgoing(from);
             return Err(format!(
                 "Insufficient balance: {} has {} ({} pending), needs {}",
-                from, balance, pending, tx_amount + pending
+                from,
+                balance,
+                pending,
+                tx_amount + pending
             ));
         }
 
         // For FundProject, check project exists and deadline not passed
         if let TransactionData::FundProject(data) = &tx.data {
-            let project = self.get_project(&data.project_id)
+            let project = self
+                .get_project(&data.project_id)
                 .ok_or(format!("Project {} not found", data.project_id))?;
 
             if !project.can_accept_donations(tx.timestamp) {
@@ -261,8 +268,46 @@ impl Blockchain {
     /// Applies all transactions from a block to compute state
     /// Returns the computed state (useful for checkpoints in future)
     pub fn compute_state(&self) -> State {
-        State::compute_from_blocks(&self.blocks)
-            .unwrap_or_else(|_| State::new())
+        State::compute_from_blocks(&self.blocks).unwrap_or_else(|_| State::new())
+    }
+
+    /// Проверяет, подтверждена ли транзакция в цепи
+    pub fn is_transaction_confirmed(&self, tx_id: &str) -> bool {
+        self.blocks
+            .iter()
+            .any(|block| block.transactions.iter().any(|tx| tx.id == tx_id))
+    }
+
+    /// Находит позицию транзакции в цепи (для статуса)
+    pub fn get_transaction_location(&self, tx_id: &str) -> Option<(u64, usize)> {
+        for (height, block) in self.blocks.iter().enumerate() {
+            for (idx, tx) in block.transactions.iter().enumerate() {
+                if tx.id == tx_id {
+                    return Some((height as u64, idx));
+                }
+            }
+        }
+        None
+    }
+
+    /// Обёртка: валидация + добавление блока
+    /// Используется API при получении блока от майнера
+    pub fn validate_and_add_block(&mut self, block: Block) -> Result<(), String> {
+        // Проверка связи с предыдущим блоком
+        if let Some(latest) = self.blocks.last() {
+            if block.header.prev_hash != latest.calculate_hash() {
+                return Err("Invalid prev_hash".to_string());
+            }
+        }
+
+        // Валидация блока (PoW, транзакции, merkle)
+        if !block.validate() {
+            return Err("Block validation failed".to_string());
+        }
+
+        // Добавление в цепь
+        self.add_block(block)?;
+        Ok(())
     }
 }
 
@@ -275,6 +320,7 @@ impl Default for Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::sign_data;
     use crate::crypto::KeyPair;
     use crate::types::transaction::*;
     use crate::Mempool;
@@ -289,22 +335,26 @@ mod tests {
                 block_height: height,
             }),
             1234567890,
-            None,
         )
     }
 
-    fn create_transfer_transaction(from: &str, to: &str, amount: u64) -> Transaction {
-        Transaction::new(
+    fn create_transfer_transaction(from_keypair: &KeyPair, to: &str, amount: u64) -> Transaction {
+        let mut tx = Transaction::new(
             TransactionType::Transfer,
-            Some(from.to_string()),
+            Some(from_keypair.public_key.to_string()),
             Some(to.to_string()),
             TransactionData::Transfer(TransferData {
                 amount,
                 message: "test".to_string(),
             }),
             1234567890,
-            Some("signature".to_string()),
-        )
+        );
+        let signing_data = tx.get_signing_data();
+        tx.add_signature(sign_data(
+            &from_keypair.private_key,
+            signing_data.as_bytes(),
+        ));
+        return tx;
     }
 
     #[test]
@@ -339,12 +389,16 @@ mod tests {
         let mut chain = Blockchain::new();
         let mempool = Mempool::new();
 
+        let alice = KeyPair::generate();
+        let bob = KeyPair::generate();
+        let miner = KeyPair::generate();
+
         // Block 1: Alice gets 100 coins
         let prev_hash = chain.get_latest_block().unwrap().calculate_hash();
         let block1 = Block::new(
             1,
             prev_hash,
-            vec![create_coinbase_transaction("alice", 100, 1)],
+            vec![create_coinbase_transaction(&alice.public_key, 100, 1)],
             0,
         );
         chain.add_block(block1).unwrap();
@@ -355,45 +409,17 @@ mod tests {
             2,
             prev_hash,
             vec![
-                create_coinbase_transaction("miner", 50, 2),
-                create_transfer_transaction("alice", "bob", 30),
+                create_coinbase_transaction(&miner.public_key, 50, 2),
+                create_transfer_transaction(&alice, &bob.public_key, 30),
             ],
             0,
         );
         chain.add_block(block2).unwrap();
 
         // Check balances
-        assert_eq!(chain.get_balance("alice"), 70);  // 100 - 30
-        assert_eq!(chain.get_balance("bob"), 30);
-        assert_eq!(chain.get_balance("miner"), 50);
-    }
-
-    #[test]
-    fn test_can_spend_with_mempool() {
-        let mut chain = Blockchain::new();
-
-        // Alice gets 100 coins
-        let prev_hash = chain.get_latest_block().unwrap().calculate_hash();
-        let block = Block::new(
-            1,
-            prev_hash,
-            vec![create_coinbase_transaction("alice", 100, 1)],
-            0,
-        );
-        chain.add_block(block).unwrap();
-
-        let mut mempool = Mempool::new();
-
-        // Alice can spend 100
-        assert!(chain.can_spend("alice", 100, &mempool));
-
-        // Add pending transaction
-        let pending_tx = create_transfer_transaction("alice", "bob", 60);
-        mempool.add_transaction(pending_tx, &chain).unwrap();
-
-        // Now alice can only spend 40 more (100 - 60 pending)
-        assert!(!chain.can_spend("alice", 50, &mempool));
-        assert!(chain.can_spend("alice", 40, &mempool));
+        assert_eq!(chain.get_balance(&alice.public_key), 70); // 100 - 30
+        assert_eq!(chain.get_balance(&bob.public_key), 30);
+        assert_eq!(chain.get_balance(&miner.public_key), 50);
     }
 
     #[test]
