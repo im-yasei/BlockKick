@@ -1,0 +1,149 @@
+use serde::Serialize;
+use std::sync::{Arc, Mutex};
+use tiny_http::{Request, Response, StatusCode};
+
+use crate::consensus::{BLOCK_REWARD, DIFFICULTY};
+use crate::mempool::Mempool;
+use crate::storage::Blockchain;
+use crate::types::{Block, BlockHeader, Transaction};
+
+// === Response структуры ===
+
+#[derive(Serialize)]
+pub struct MiningCandidate {
+    pub block_template: BlockHeader,
+    pub transactions: Vec<Transaction>,
+    pub prev_hash: String,
+    pub difficulty: u32,
+    pub reward: u64,
+}
+
+#[derive(Serialize)]
+pub struct SubmitResponse {
+    pub status: String,
+    pub reward: u64,
+}
+
+// === GET /api/v1/mining/candidate ===
+
+pub fn handle_get_candidate(
+    request: Request,
+    blockchain: &Arc<Mutex<Blockchain>>,
+    mempool: &Arc<Mutex<Mempool>>,
+) -> Result<(), String> {
+    let chain = blockchain.lock().unwrap();
+    let mp = mempool.lock().unwrap();
+
+    // Получаем последний блок
+    let latest = chain
+        .get_latest_block()
+        .ok_or_else(|| "Blockchain is empty")?;
+
+    let prev_hash = latest.calculate_hash();
+    let next_height = latest.header.index + 1;
+
+    // Берём транзакции из мемпула для включения в блок
+    let mut transactions: Vec<Transaction> = mp
+        .get_transactions()
+        .iter()
+        .take(100) // Лимит на количество транзакций в блоке
+        .cloned()
+        .collect();
+
+    // Добавляем placeholder для coinbase (майнер заменит на реальный)
+    let coinbase = Transaction::create_coinbase(
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        BLOCK_REWARD,
+        next_height,
+    );
+    transactions.insert(0, coinbase);
+
+    // Вычисляем Merkle Root
+    let merkle_root = Block::calculate_merkle_root(&transactions);
+
+    let current_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+
+    // Шаблон заголовка (майнер подберёт nonce)
+    let block_template = BlockHeader {
+        index: next_height,
+        timestamp: current_time,
+        prev_hash: prev_hash.clone(),
+        merkle_root,
+        nonce: 0, // Майнер будет менять это поле
+    };
+
+    let candidate = MiningCandidate {
+        block_template,
+        transactions,
+        prev_hash,
+        difficulty: DIFFICULTY,
+        reward: BLOCK_REWARD,
+    };
+
+    send_json(request, StatusCode(200), &candidate)
+}
+
+// === POST /api/v1/mining/submit ===
+
+pub fn handle_submit(
+    mut request: Request,
+    blockchain: &Arc<Mutex<Blockchain>>,
+) -> Result<(), String> {
+    // Читаем блок из тела запроса
+    let mut body = String::new();
+    request
+        .as_reader()
+        .read_to_string(&mut body)
+        .map_err(|e| format!("Failed to read body: {}", e))?;
+
+    let block: Block = serde_json::from_str(&body).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+    let mut chain = blockchain.lock().unwrap();
+
+    // 1. Проверяем связь с последним блоком
+    let latest = chain
+        .get_latest_block()
+        .ok_or_else(|| "Blockchain is empty")?;
+
+    let expected_prev = latest.calculate_hash();
+    if block.header.prev_hash != expected_prev {
+        return send_error(request, StatusCode(400), "Invalid prev_hash");
+    }
+
+    // 2. Проверяем PoW
+    let block_hash = block.calculate_hash();
+    if !crate::consensus::verify_pow(&block_hash) {
+        return send_error(request, StatusCode(400), "Invalid PoW");
+    }
+
+    // 3. Валидируем и добавляем блок
+    if let Err(e) = chain.validate_and_add_block(block) {
+        return send_error(request, StatusCode(400), &format!("Invalid block: {}", e));
+    }
+
+    // Успех
+    send_json(
+        request,
+        StatusCode(200),
+        &SubmitResponse {
+            status: "accepted".to_string(),
+            reward: BLOCK_REWARD,
+        },
+    )
+}
+
+// === Вспомогательные функции ===
+
+fn send_json<T: Serialize>(request: Request, status: StatusCode, data: &T) -> Result<(), String> {
+    let json = serde_json::to_string(data).unwrap();
+    let response = Response::new(status, vec![], json.as_bytes(), None, None);
+    request.respond(response).map_err(|e| e.to_string())
+}
+
+fn send_error(request: Request, status: StatusCode, message: &str) -> Result<(), String> {
+    let response = Response::new(status, vec![], message.as_bytes(), None, None);
+    request.respond(response).map_err(|e| e.to_string())
+}
