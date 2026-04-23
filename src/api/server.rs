@@ -39,7 +39,9 @@ fn handle_request(request: Request, ctx: &Arc<ApiContext>) -> Result<(), String>
     let url = request.url().to_string();
     let method = request.method().to_string();
 
-    match (method.as_str(), url.as_str()) {
+    let path = url.split("?").next().unwrap_or(&url);
+
+    match (method.as_str(), path) {
         // === Transactions ===
         ("POST", u) if u.starts_with("/api/v1/transactions") && !u.contains("/transactions/") => {
             transactions::handle_post(request, &ctx.blockchain, &ctx.mempool)
