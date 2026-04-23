@@ -1,0 +1,20 @@
+#!/bin/sh
+echo "Checking code formatting..."
+cargo fmt --check || {
+  echo "Run 'cargo fmt' to fix formatting."
+  exit 1
+}
+
+echo "Running clippy..."
+cargo clippy --all-targets || {
+  echo "Fix clippy errors."
+  exit 1
+}
+
+echo "Running tests..."
+cargo test || {
+  echo "Tests failed."
+  exit 1
+}
+
+echo "All checks passed."
