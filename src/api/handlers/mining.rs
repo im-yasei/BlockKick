@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 use tiny_http::{Request, Response, StatusCode};
+use url::form_urlencoded;
 
 use crate::consensus::{BLOCK_REWARD, DIFFICULTY};
 use crate::mempool::Mempool;
@@ -24,8 +25,7 @@ pub struct SubmitResponse {
     pub reward: u64,
 }
 
-// === GET /api/v1/mining/candidate ===
-
+// GET /api/v1/mining/candidate?miner=<address>
 pub fn handle_get_candidate(
     request: Request,
     blockchain: &Arc<Mutex<Blockchain>>,
@@ -34,7 +34,6 @@ pub fn handle_get_candidate(
     let chain = blockchain.lock().unwrap();
     let mp = mempool.lock().unwrap();
 
-    // Получаем последний блок
     let latest = chain
         .get_latest_block()
         .ok_or_else(|| "Blockchain is empty")?;
@@ -42,23 +41,24 @@ pub fn handle_get_candidate(
     let prev_hash = latest.calculate_hash();
     let next_height = latest.header.index + 1;
 
-    // Берём транзакции из мемпула для включения в блок
-    let mut transactions: Vec<Transaction> = mp
-        .get_transactions()
-        .iter()
-        .take(100) // Лимит на количество транзакций в блоке
-        .cloned()
-        .collect();
+    // Парсим ?miner=<address> из запроса
+    let miner_address = parse_query_param(request.url(), "miner").unwrap_or_else(|| {
+        "0000000000000000000000000000000000000000000000000000000000000000".to_string()
+    });
 
-    // Добавляем placeholder для coinbase (майнер заменит на реальный)
+    // Берём транзакции из мемпула
+    let mut transactions: Vec<Transaction> =
+        mp.get_transactions().iter().take(100).cloned().collect();
+
+    // Создаём coinbase СРАЗУ с правильным адресом майнера
     let coinbase = Transaction::create_coinbase(
-        "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        miner_address.clone(), // ← Реальный адрес из запроса!
         BLOCK_REWARD,
         next_height,
     );
     transactions.insert(0, coinbase);
 
-    // Вычисляем Merkle Root
+    // Вычисляем Merkle Root (уже с правильным coinbase)
     let merkle_root = Block::calculate_merkle_root(&transactions);
 
     let current_time = std::time::SystemTime::now()
@@ -66,13 +66,12 @@ pub fn handle_get_candidate(
         .unwrap()
         .as_secs();
 
-    // Шаблон заголовка (майнер подберёт nonce)
     let block_template = BlockHeader {
         index: next_height,
         timestamp: current_time,
         prev_hash: prev_hash.clone(),
         merkle_root,
-        nonce: 0, // Майнер будет менять это поле
+        nonce: 0,
     };
 
     let candidate = MiningCandidate {
@@ -86,6 +85,14 @@ pub fn handle_get_candidate(
     send_json(request, StatusCode(200), &candidate)
 }
 
+// Вспомогательная функция для парсинга query params
+fn parse_query_param(url: &str, param: &str) -> Option<String> {
+    url.split('?').nth(1).and_then(|query| {
+        form_urlencoded::parse(query.as_bytes())
+            .find(|(k, _)| k == param)
+            .map(|(_, v)| v.into_owned())
+    })
+}
 // === POST /api/v1/mining/submit ===
 
 pub fn handle_submit(

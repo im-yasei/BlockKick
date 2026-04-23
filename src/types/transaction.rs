@@ -108,6 +108,7 @@ impl Transaction {
     pub fn get_signing_data(&self) -> String {
         let mut tx_copy = self.clone();
         tx_copy.signature = None;
+        tx_copy.id = String::new();
         serde_json::to_string(&tx_copy).unwrap_or_default()
     }
 
