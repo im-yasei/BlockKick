@@ -1,18 +1,17 @@
 use crate::consensus::DIFFICULTY;
 use crate::types::BlockHeader;
 
-// Проверяет, удовлетворяет ли хеш требуемой сложности
 pub fn verify_pow(block_hash: &str) -> bool {
-    // TODO: заглушка, убрать
-    true
+    if block_hash.is_empty() {
+        return false;
+    }
+    let prefix = "0".repeat(DIFFICULTY as usize);
+    block_hash.starts_with(&prefix)
 }
 
-// Полная валидация PoW:
-// 1) соответствие сложности
-// 2) хэш, указанный в заголовке, соответствует заново вычисленному хешу
 pub fn validate_pow(header: &BlockHeader, block_hash: &str) -> bool {
-    // TODO: заглушка, убрать
-    true
+    let computed_hash = header.calculate_hash();
+    computed_hash == block_hash && verify_pow(block_hash)
 }
 
 #[cfg(test)]
@@ -46,10 +45,7 @@ mod tests {
             merkle_root: "abc123".repeat(10),
             nonce: 0,
         };
-
         let wrong_hash = "wrong_hash";
         assert!(!validate_pow(&header, wrong_hash));
     }
-
-    // TODO: возможно сделать тест на happy path для validate_pow
 }

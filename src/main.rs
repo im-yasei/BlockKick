@@ -11,7 +11,7 @@ mod storage;
 mod types;
 mod validator;
 
-use api::server::{start_server, ApiContext};
+use api::server::{ApiContext, start_server};
 use mempool::mempool::Mempool;
 use storage::blockchain::Blockchain;
 use types::Block;

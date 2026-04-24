@@ -320,10 +320,10 @@ impl Default for Blockchain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::sign_data;
-    use crate::crypto::KeyPair;
-    use crate::types::transaction::*;
     use crate::Mempool;
+    use crate::crypto::KeyPair;
+    use crate::crypto::sign_data;
+    use crate::types::transaction::*;
 
     fn create_coinbase_transaction(to: &str, reward: u64, height: u64) -> Transaction {
         Transaction::new(

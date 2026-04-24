@@ -1,0 +1,872 @@
+openapi: 3.0.3
+info:
+  title: BlockKick API
+  description: |
+    API децентрализованной краудфандинговой платформы BlockKick.
+    
+    ## Важные условности
+    
+    ### Порядок полей в транзакции
+    При вычислении `id` транзакции порядок полей **критичен**:
+    ```
+    1. id
+    2. tx_type
+    3. from
+    4. to
+    5. data
+    6. timestamp
+    7. signature
+    ```
+    
+    ### Вычисление ID транзакции
+    Вычисляется от тела транзакции data и заголовка с пустыми значениями id и signature
+    ```
+    id = SHA256(serialize({
+      "id": "",
+      "tx_type": "...",
+      "from": "...",
+      "to": ...,
+      "data": {...},
+      "timestamp": 1234567890,
+      "signature": null (None в python)
+    }))
+    ```
+    
+    ### Подпись транзакции
+    Данные для подписи = те же что для `calculate_id()`.
+    
+    ### tx_type
+    - `CreateProject` (не CreateProject)
+    - `FundProject`
+    - `Transfer`
+    - `Coinbase`
+    
+    ### Mining: параметр ?miner=
+    При запросе `/mining/candidate?miner=<address>` нода подставит этот адрес в `coinbase.to`,
+    поэтому нужно указывать свой публичный ключ, ну или ключ, на который вы хотите отправить свои отмайненные денюжки.
+    
+    ### Тестовый режим
+    Заголовок `X-Test-Mode: true` отключает проверку PoW в `/mining/submit`.
+  version: 0.0.1
+
+tags:
+  - name: Transactions
+    description: Отправка и проверка статуса транзакций
+  - name: Mining
+    description: Получение шаблонов и отправка блоков для майнинга
+  - name: Queries
+    description: Чтение данных из блокчейна
+
+# ============================================================================
+# PATHS
+# ============================================================================
+
+paths:
+  /api/v1/transactions:
+    post:
+      tags:
+        - Transactions
+      summary: Отправить новую транзакцию
+      description: |
+        Отправляет подписанную транзакцию в сеть.
+        
+        ## Валидация
+        - Проверяется подпись Ed25519
+        - Проверяется `tx.id == calculate_id(tx)`
+        - Проверяется баланс отправителя
+        - Проверяется уникальность (пока не проверяется...)
+      operationId: submitTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Transaction'
+            examples:
+              create_project:
+                summary: Создание проекта
+                value:
+                  id: "5a87bfaa138d71b6b836f0a99ff8fed5148c01ca85dbcdb9727a75956d327867"
+                  tx_type: "CreateProject"
+                  from: "ddd1b0f05f220f5f8620a50e3998e68acc37a5d59c10e9d071d67a3e9551a4d5"
+                  to: null
+                  data:
+                    project_id: "proj_cf183ff5549af78b"
+                    name: "TestProject"
+                    description: ""
+                    goal_amount: 123
+                    deadline_timestamp: 1779399797
+                    creator_wallet: "ddd1b0f05f220f5f8620a50e3998e68acc37a5d59c10e9d071d67a3e9551a4d5"
+                  timestamp: 1776807797
+                  signature: "6de40b19e18f203be20e7c1660ef1ae273a29431ef7b998a77c39bd98853ffbd7017595e57127907b9eb314b5dd4974f163a4b9328cca804ae0ba678473b130c"
+              fund_project:
+                summary: Взнос в проект
+                value:
+                  id: "tx_fund_..."
+                  tx_type: "FundProject"
+                  from: "backer_pubkey_hex..."
+                  to: "creator_pubkey_hex..."
+                  data:
+                    project_id: "proj_cf183ff5549af78b"
+                    amount: 50
+                    backer_note: "Good luck!"
+                  timestamp: 1776807800
+                  signature: "signature_hex..."
+              transfer:
+                summary: Обычный перевод
+                value:
+                  id: "tx_transfer_..."
+                  tx_type: "Transfer"
+                  from: "sender_pubkey_hex..."
+                  to: "receiver_pubkey_hex..."
+                  data:
+                    amount: 100
+                    message: "Thanks!"
+                  timestamp: 1776807800
+                  signature: "signature_hex..."
+      responses:
+        '200':
+          description: Транзакция принята или уже существует
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TxResponse'
+              examples:
+                pending:
+                  summary: Принята в мемпул
+                  value:
+                    tx_id: "5a87bfaa138d71b6b836f0a99ff8fed5148c01ca85dbcdb9727a75956d327867"
+                    status: "pending"
+                already_confirmed:
+                  summary: Уже в блокчейне
+                  value:
+                    tx_id: "5a87bfaa..."
+                    status: "already_confirmed"
+                rejected:
+                  summary: Отклонена
+                  value:
+                    tx_id: "5a87bfaa..."
+                    status: "rejected: Invalid signature"
+        '400':
+          description: Ошибка валидации
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_json:
+                  value:
+                    error: "Invalid JSON: expected value at line 1 column 1"
+                invalid_signature:
+                  value:
+                    error: "rejected: Invalid signature"
+                insufficient_balance:
+                  value:
+                    error: "rejected: Insufficient balance"
+
+  /api/v1/transactions/{tx_id}:
+    get:
+      tags:
+        - Transactions
+      summary: Получить статус транзакции
+      operationId: getTransactionStatus
+      description: Возвращает статус транзакции - pending (в мемпуле) или confirmed (в блоке).
+      parameters:
+        - name: tx_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{64}$'
+          description: SHA-256 хеш транзакции (64 hex символа)
+          example: "5a87bfaa138d71b6b836f0a99ff8fed5148c01ca85dbcdb9727a75956d327867"
+      responses:
+        '200':
+          description: Статус найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TxStatusResponse'
+              examples:
+                pending:
+                  value:
+                    status: "pending"
+                    block_height: null
+                confirmed:
+                  value:
+                    status: "confirmed"
+                    block_height: 15
+        '404':
+          description: Транзакция не найдена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Transaction not found"
+
+  /api/v1/mining/candidate:
+    get:
+      tags:
+        - Mining
+      summary: Получить шаблон блока для майнинга
+      description: |
+        Возвращает шаблон блока с транзакциями из мемпула.
+        
+        ## Параметр ?miner=
+        Если указан `?miner=<address>`, нода подставит этот адрес в `coinbase.to`.
+        Если не указан - используется заглушка `0000...0000`.
+        
+        ## Важно
+        - `transactions[0]` - всегда `coinbase`
+        - `merkle_root` уже вычислен с правильным `coinbase.to`
+      operationId: getMiningCandidate
+      parameters:
+        - name: miner
+          in: query
+          required: false
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{64}$'
+          description: Публичный ключ майнера для получения награды (64 hex символа)
+          example: "ddd1b0f05f220f5f8620a50e3998e68acc37a5d59c10e9d071d67a3e9551a4d5"
+      responses:
+        '200':
+          description: Шаблон блока
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MiningCandidate'
+              example:
+                block_template:
+                  index: 3
+                  timestamp: 1776811901
+                  prev_hash: "d261685c9bf182bf03b57ccba5fe2ebee19fca4e1cb0714a862ebbc1b3f961b6"
+                  merkle_root: "f594178c890d9d300bb7d0907fc71ff551a3ec7755db2d34f5c423ebc1437cfe"
+                  nonce: 0
+                transactions:
+                  - id: "coinbase_id..."
+                    tx_type: "Coinbase"
+                    from: null
+                    to: "ddd1b0f05f220f5f8620a50e3998e68acc37a5d59c10e9d071d67a3e9551a4d5"
+                    data:
+                      reward: 50
+                      block_height: 3
+                    timestamp: 1776811901
+                    signature: null
+                  - id: "tx_1..."
+                    tx_type: "CreateProject"
+                    from: "creator_pubkey..."
+                    to: null
+                    data:
+                      project_id: "proj_abc"
+                      name: "Test"
+                      goal_amount: 100
+                      deadline_timestamp: 9999999999
+                      creator_wallet: "creator_pubkey..."
+                    timestamp: 1776810000
+                    signature: "sig_..."
+                prev_hash: "d261685c9bf182bf03b57ccba5fe2ebee19fca4e1cb0714a862ebbc1b3f961b6"
+                difficulty: 4
+                reward: 50
+        '400':
+          description: Ошибка (например, пустой блокчейн)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Blockchain is empty"
+
+  /api/v1/mining/submit:
+    post:
+      tags:
+        - Mining
+      summary: Отправить найденный блок
+      description: |
+        Отправляет блок с подобранным nonce для валидации и добавления в цепь.
+        
+        ## Проверки ноды
+        1. `prev_hash` совпадает с хешем последнего блока
+        2. Валидация транзакций (подписи, балансы, Merkle root)
+
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Block'
+            example:
+              header:
+                index: 3
+                timestamp: 1776811901
+                prev_hash: "d261685c9bf182bf03b57ccba5fe2ebee19fca4e1cb0714a862ebbc1b3f961b6"
+                merkle_root: "f594178c890d9d300bb7d0907fc71ff551a3ec7755db2d34f5c423ebc1437cfe"
+                nonce: 12345
+              transactions:
+                - id: "coinbase_id..."
+                  tx_type: "Coinbase"
+                  from: null
+                  to: "miner_pubkey..."
+                  data:
+                    reward: 50
+                    block_height: 3
+                  timestamp: 1776811901
+                  signature: null
+                - id: "tx_1..."
+                  tx_type: "CreateProject"
+                  from: "creator_pubkey..."
+                  to: null
+                  data:
+                    project_id: "proj_abc"
+                    name: "Test"
+                    goal_amount: 100
+                    deadline_timestamp: 9999999999
+                    creator_wallet: "creator_pubkey..."
+                  timestamp: 1776810000
+                  signature: "sig_..."
+      responses:
+        '200':
+          description: Блок принят
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitResponse'
+              example:
+                status: "accepted"
+                reward: 50
+        '400':
+          description: Ошибка валидации блока
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_prev_hash:
+                  value:
+                    error: "Invalid prev_hash"
+                invalid_pow:
+                  value:
+                    error: "Invalid PoW"
+                invalid_block:
+                  value:
+                    error: "Invalid block: Invalid Merkle Root"
+
+  /api/v1/chain:
+    get:
+      tags:
+        - Queries
+      summary: Информация о блокчейне
+      description: Возвращает текущую высоту цепи и хеш последнего блока.
+      operationId: getChainInfo
+      responses:
+        '200':
+          description: Информация о цепи
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChainInfoResponse'
+              example:
+                height: 15
+                latest_hash: "d261685c9bf182bf03b57ccba5fe2ebee19fca4e1cb0714a862ebbc1b3f961b6"
+
+  /api/v1/block/{height}:
+    get:
+      tags:
+        - Queries
+      summary: Получить блок по высоте
+      description: Возвращает информацию о блоке по его высоте (индексу).
+      operationId: getBlockByHeight
+      parameters:
+        - name: height
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+          description: Высота блока (0 = genesis)
+          example: 0
+      responses:
+        '200':
+          description: Информация о блоке
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BlockInfoResponse'
+              example:
+                index: 0
+                hash: "0000abc123..."
+                timestamp: 1234567890
+                transaction_count: 1
+        '404':
+          description: Блок не найден
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Block not found"
+
+  /api/v1/balance/{address}:
+    get:
+      tags:
+        - Queries
+      summary: Получить баланс адреса
+      description: |
+        Возвращает баланс адреса.
+        
+        ## Важно
+        Баланс вычисляется проходом по всем блокам.
+      operationId: getBalance
+      parameters:
+        - name: address
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-f0-9]{64}$'
+          description: Публичный ключ адреса (64 hex символа)
+          example: "ddd1b0f05f220f5f8620a50e3998e68acc37a5d59c10e9d071d67a3e9551a4d5"
+      responses:
+        '200':
+          description: Баланс адреса
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+              example:
+                balance: 50
+
+  /api/v1/projects:
+    get:
+      tags:
+        - Queries
+      summary: Список проектов
+      description: |
+        Возвращает список всех проектов в блокчейне.
+        
+        ## Статусы проектов
+        | Статус | Условие |
+        |--------|---------|
+        | CREATED | Нет взносов |
+        | ACTIVE | Есть взносы, дедлайн не прошёл |
+        | COMPLETED | Дедлайн прошёл |
+        | SUCCESS | COMPLETED + raised >= goal |
+        | FAILED | COMPLETED + raised < goal |
+        
+        ## Важно
+        Средства не замораживаются - сразу у создателя. Возврат не предусмотрен.
+      operationId: getProjects
+      responses:
+        '200':
+          description: Список проектов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProjectSummary'
+              example:
+                - project_id: "proj_cf183ff5549af78b"
+                  name: "TestProject"
+                  goal_amount: 123
+                  raised_amount: 0
+                  status: "CREATED"
+                - project_id: "proj_a7bf53ec2d8e4f3b"
+                  name: "Test"
+                  goal_amount: 100
+                  raised_amount: 50
+                  status: "ACTIVE"
+
+# ============================================================================
+# COMPONENTS / SCHEMAS
+# ============================================================================
+
+components:
+  schemas:
+    # === Transaction ===
+    
+    Transaction:
+      type: object
+      required:
+        - id
+        - tx_type
+        - from
+        - to
+        - data
+        - timestamp
+        - signature
+      properties:
+        id:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: SHA-256 хеш транзакции (вычисляется от данных без id и signature)
+          example: "5a87bfaa138d71b6b836f0a99ff8fed5148c01ca85dbcdb9727a75956d327867"
+        tx_type:
+          type: string
+          enum: [CreateProject, FundProject, Transfer, Coinbase]
+          description: Тип транзакции
+          example: "CreateProject"
+        from:
+          type: string
+          nullable: true
+          pattern: '^[a-f0-9]{64}$'
+          description: Публичный ключ отправителя (64 hex), null для coinbase
+          example: "ddd1b0f05f220f5f8620a50e3998e68acc37a5d59c10e9d071d67a3e9551a4d5"
+        to:
+          type: string
+          nullable: true
+          pattern: '^[a-f0-9]{64}$'
+          description: Адрес получателя, null для операций с проектами
+          example: "receiver_pubkey_hex..."
+        data:
+          oneOf:
+            - $ref: '#/components/schemas/CreateProjectData'
+            - $ref: '#/components/schemas/FundProjectData'
+            - $ref: '#/components/schemas/TransferData'
+            - $ref: '#/components/schemas/CoinbaseData'
+          description: Типо-специфичные данные (определяется по tx_type)
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp создания транзакции
+          example: 1776807797
+        signature:
+          type: string
+          nullable: true
+          pattern: '^[a-f0-9]{128}$'
+          description: Ed25519 подпись, null для coinbase
+          example: "6de40b19e18f203be20e7c1660ef1ae273a29431ef7b998a77c39bd98853ffbd7017595e57127907b9eb314b5dd4974f163a4b9328cca804ae0ba678473b130c"
+
+    CreateProjectData:
+      type: object
+      required:
+        - project_id
+        - name
+        - description
+        - goal_amount
+        - deadline_timestamp
+        - creator_wallet
+      properties:
+        project_id:
+          type: string
+          pattern: '^proj_[a-f0-9]{16}$'
+          description: Уникальный ID проекта
+          example: "proj_cf183ff5549af78b"
+        name:
+          type: string
+          description: Название проекта
+          example: "Open Source Game"
+        description:
+          type: string
+          description: Описание проекта
+          example: "Indie game built with Rust"
+        goal_amount:
+          type: integer
+          minimum: 1
+          description: Целевая сумма сбора в коинах
+          example: 1000
+        deadline_timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp дедлайна
+          example: 1779399797
+        creator_wallet:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Адрес кошелька создателя
+          example: "ddd1b0f05f220f5f8620a50e3998e68acc37a5d59c10e9d071d67a3e9551a4d5"
+
+    FundProjectData:
+      type: object
+      required:
+        - project_id
+        - amount
+      properties:
+        project_id:
+          type: string
+          pattern: '^proj_[a-f0-9]{16}$'
+          description: ID проекта для финансирования
+          example: "proj_cf183ff5549af78b"
+        amount:
+          type: integer
+          minimum: 1
+          description: Сумма взноса в коинах
+          example: 50
+        backer_note:
+          type: string
+          description: Опциональное сообщение от бэкера
+          example: "Good luck with the project!"
+
+    TransferData:
+      type: object
+      required:
+        - amount
+      properties:
+        amount:
+          type: integer
+          minimum: 1
+          description: Сумма перевода в коинах
+          example: 100
+        message:
+          type: string
+          maxLength: 200
+          description: Опциональное сообщение
+          example: "Thanks for your help!"
+
+    CoinbaseData:
+      type: object
+      required:
+        - reward
+        - block_height
+      properties:
+        reward:
+          type: integer
+          minimum: 1
+          description: Награда майнеру (по протоколу = 50)
+          example: 50
+        block_height:
+          type: integer
+          minimum: 0
+          description: Высота блока, за который выплачивается награда
+          example: 105
+
+    # === Block ===
+
+    Block:
+      type: object
+      required:
+        - header
+        - transactions
+      properties:
+        header:
+          $ref: '#/components/schemas/BlockHeader'
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+          minItems: 1
+          description: Массив транзакций (первая всегда coinbase)
+
+    BlockHeader:
+      type: object
+      required:
+        - index
+        - timestamp
+        - prev_hash
+        - merkle_root
+        - nonce
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: Высота блока (0 = genesis)
+          example: 3
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp создания блока
+          example: 1776811901
+        prev_hash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: SHA-256 хеш предыдущего блока
+          example: "d261685c9bf182bf03b57ccba5fe2ebee19fca4e1cb0714a862ebbc1b3f961b6"
+        merkle_root:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Корень Меркла всех транзакций в блоке
+          example: "f594178c890d9d300bb7d0907fc71ff551a3ec7755db2d34f5c423ebc1437cfe"
+        nonce:
+          type: integer
+          minimum: 0
+          description: Число для подбора хеша (PoW)
+          example: 12345
+
+    # === Mining ===
+
+    MiningCandidate:
+      type: object
+      required:
+        - block_template
+        - transactions
+        - prev_hash
+        - difficulty
+        - reward
+      properties:
+        block_template:
+          $ref: '#/components/schemas/BlockHeader'
+          description: Шаблон заголовка
+        transactions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Transaction'
+          description: Транзакции для включения в блок (первая coinbase)
+        prev_hash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Хеш последнего блока (для связи)
+          example: "d261685c9bf182bf03b57ccba5fe2ebee19fca4e1cb0714a862ebbc1b3f961b6"
+        difficulty:
+          type: integer
+          minimum: 0
+          description: Текущая сложность (количество ведущих нулей)
+          example: 4
+        reward:
+          type: integer
+          description: Награда за блок в коинах
+          example: 50
+
+    SubmitResponse:
+      type: object
+      required:
+        - status
+        - reward
+      properties:
+        status:
+          type: string
+          enum: [accepted]
+          description: Статус принятия блока
+          example: "accepted"
+        reward:
+          type: integer
+          description: Выплаченная награда
+          example: 50
+
+    # === Responses ===
+
+    TxResponse:
+      type: object
+      required:
+        - tx_id
+        - status
+      properties:
+        tx_id:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: ID транзакции
+          example: "5a87bfaa138d71b6b836f0a99ff8fed5148c01ca85dbcdb9727a75956d327867"
+        status:
+          type: string
+          enum: [pending, already_confirmed, already_pending]
+          pattern: '^rejected: .+$'
+          description: Статус обработки
+          example: "pending"
+
+    TxStatusResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [confirmed, pending]
+          description: Статус транзакции
+          example: "confirmed"
+        block_height:
+          type: integer
+          minimum: 0
+          nullable: true
+          description: Высота блока (только если confirmed)
+          example: 15
+
+    ChainInfoResponse:
+      type: object
+      required:
+        - height
+        - latest_hash
+      properties:
+        height:
+          type: integer
+          minimum: 0
+          description: Текущая высота цепи
+          example: 15
+        latest_hash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Хеш последнего блока
+          example: "d261685c9bf182bf03b57ccba5fe2ebee19fca4e1cb0714a862ebbc1b3f961b6"
+
+    BlockInfoResponse:
+      type: object
+      required:
+        - index
+        - hash
+        - timestamp
+        - transaction_count
+      properties:
+        index:
+          type: integer
+          minimum: 0
+          description: Высота блока
+          example: 0
+        hash:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Хеш блока
+          example: "0000abc123..."
+        timestamp:
+          type: integer
+          format: int64
+          description: Timestamp создания блока
+          example: 1234567890
+        transaction_count:
+          type: integer
+          minimum: 1
+          description: Количество транзакций в блоке
+          example: 1
+
+    BalanceResponse:
+      type: object
+      required:
+        - balance
+      properties:
+        balance:
+          type: integer
+          minimum: 0
+          description: Баланс адреса в коинах
+          example: 50
+
+    ProjectSummary:
+      type: object
+      required:
+        - project_id
+        - name
+        - goal_amount
+        - raised_amount
+        - status
+      properties:
+        project_id:
+          type: string
+          pattern: '^proj_[a-f0-9]{16}$'
+          description: Уникальный ID проекта
+          example: "proj_cf183ff5549af78b"
+        name:
+          type: string
+          description: Название проекта
+          example: "TestProject"
+        goal_amount:
+          type: integer
+          minimum: 1
+          description: Целевая сумма сбора
+          example: 123
+        raised_amount:
+          type: integer
+          minimum: 0
+          description: Собранная сумма
+          example: 0
+        status:
+          type: string
+          enum: [CREATED, ACTIVE, COMPLETED, SUCCESS, FAILED]
+          description: Текущий статус проекта
+          example: "CREATED"
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          description: Описание ошибки
+          example: "Invalid signature"

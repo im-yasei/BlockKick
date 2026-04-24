@@ -34,10 +34,10 @@ impl Validator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::keys::KeyPair;
     use crate::crypto::sign_data;
-    use crate::keys::KeyPair;
-    use crate::types::transaction::*;
     use crate::types::Block;
+    use crate::types::transaction::*;
 
     #[test]
     fn test_validate_transaction_id() {

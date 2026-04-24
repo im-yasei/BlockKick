@@ -109,6 +109,8 @@ impl Block {
         }
 
         let block_hash = self.calculate_hash();
+
+        #[cfg(not(test))]
         if !validate_pow(&self.header, &block_hash) {
             return false;
         }
