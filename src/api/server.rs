@@ -54,7 +54,9 @@ fn handle_request(request: Request, ctx: &Arc<ApiContext>) -> Result<(), String>
         ("GET", "/api/v1/mining/candidate") => {
             mining::handle_get_candidate(request, &ctx.blockchain, &ctx.mempool)
         }
-        ("POST", "/api/v1/mining/submit") => mining::handle_submit(request, &ctx.blockchain),
+        ("POST", "/api/v1/mining/submit") => {
+            mining::handle_submit(request, &ctx.blockchain, &ctx.mempool)
+        }
 
         // === Queries ===
         ("GET", u) if u.starts_with("/api/v1/balance/") => {

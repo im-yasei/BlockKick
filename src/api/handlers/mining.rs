@@ -98,6 +98,7 @@ fn parse_query_param(url: &str, param: &str) -> Option<String> {
 pub fn handle_submit(
     mut request: Request,
     blockchain: &Arc<Mutex<Blockchain>>,
+    mempool: &Arc<Mutex<Mempool>>,
 ) -> Result<(), String> {
     // Читаем блок из тела запроса
     let mut body = String::new();
@@ -109,6 +110,18 @@ pub fn handle_submit(
     let block: Block = serde_json::from_str(&body).map_err(|e| format!("Invalid JSON: {}", e))?;
 
     let mut chain = blockchain.lock().unwrap();
+
+    {
+        // Берём лок на мемпул (отдельно от chain, чтобы не было дедлока)
+        let mut mp = mempool.lock().unwrap();
+
+        for tx in &block.transactions {
+            // Coinbase не в мемпуле — пропускаем
+            if tx.tx_type != crate::types::TransactionType::Coinbase {
+                mp.remove_transaction(&tx.id);
+            }
+        }
+    }
 
     // 1. Проверяем связь с последним блоком
     let latest = chain
