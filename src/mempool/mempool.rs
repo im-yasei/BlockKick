@@ -16,6 +16,15 @@ impl Mempool {
         }
     }
 
+    pub fn remove_transaction(&mut self, tx_id: &str) -> bool {
+        if let Some(pos) = self.transactions.iter().position(|t| t.id == tx_id) {
+            self.transactions.remove(pos);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Creates mempool from existing transactions
     pub fn from_transactions(transactions: Vec<Transaction>) -> Self {
         Mempool { transactions }
@@ -94,16 +103,6 @@ impl Mempool {
 
         self.transactions.push(tx);
         Ok(())
-    }
-
-    /// Removes a transaction from the mempool by ID
-    pub fn remove_transaction(&mut self, tx_id: &str) -> bool {
-        if let Some(pos) = self.transactions.iter().position(|t| t.id == tx_id) {
-            self.transactions.remove(pos);
-            true
-        } else {
-            false
-        }
     }
 
     /// Removes multiple transactions by ID
